@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>PEDIDOSRAPIDO — Vitanuts</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { font-family: -apple-system, Roboto, Arial, sans-serif; margin: 0; background: #f4f4f4; color: #222; padding-bottom: 90px; }
+  header { background: #1b5e20; color: #fff; padding: 14px 16px; position: sticky; top: 0; z-index: 10; }
+  header h1 { font-size: 18px; margin: 0; }
+  .status-bar { font-size: 12px; padding: 6px 16px; background: #ffe082; color: #6d4c00; display: none; }
+  .status-bar.on { display: block; }
+  .status-bar.offline { background: #ffcdd2; color: #b71c1c; }
+  main { padding: 16px; max-width: 480px; margin: 0 auto; }
+  section { background: #fff; border-radius: 10px; padding: 14px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  label { font-size: 13px; color: #555; display: block; margin-bottom: 4px; }
+  input, select { width: 100%; padding: 12px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; margin-bottom: 8px; }
+  button { font-size: 16px; padding: 12px 16px; border: none; border-radius: 8px; cursor: pointer; }
+  .btn-primary { background: #1b5e20; color: #fff; width: 100%; }
+  .btn-secondary { background: #eee; color: #333; }
+  .btn-danger { background: #c62828; color: #fff; }
+  .lista-sugestoes { max-height: 180px; overflow-y: auto; border: 1px solid #ddd; border-radius: 8px; margin-top: -4px; margin-bottom: 8px; }
+  .sugestao { padding: 10px 12px; border-bottom: 1px solid #eee; }
+  .sugestao:active { background: #e8f5e9; }
+  .item-linha { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #eee; }
+  .item-linha button { background: none; color: #c62828; font-size: 20px; padding: 0 8px; }
+  .qtd-input { width: 60px; display: inline-block; padding: 8px; }
+  .total { font-size: 18px; font-weight: bold; text-align: right; margin-top: 8px; }
+  .pedido-card { border: 1px solid #eee; border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+  .badge { font-size: 11px; padding: 3px 8px; border-radius: 12px; font-weight: bold; }
+  .badge-pendente { background: #fff3e0; color: #e65100; }
+  .badge-enviado { background: #e8f5e9; color: #1b5e20; }
+  .badge-erro { background: #ffebee; color: #b71c1c; }
+  #tela-login { max-width: 320px; margin: 80px auto; text-align: center; }
+</style>
+</head>
+<body>
+
+<div id="tela-login">
+  <h2>Pedido Vitanuts</h2>
+  <input type="password" id="input-senha" placeholder="Senha de acesso" inputmode="numeric">
+  <button class="btn-primary" onclick="entrar()">Entrar</button>
+  <p id="erro-login" style="color:#c62828; display:none;">Senha incorreta.</p>
+</div>
+
+<div id="app" style="display:none;">
+  <header>
+    <h1>PEDIDOSRAPIDO</h1>
+  </header>
+  <div id="status-bar" class="status-bar"></div>
+
+  <main>
+    <section>
+      <label>Cliente</label>
+      <input type="text" id="busca-cliente" placeholder="Digite o nome do cliente..." oninput="filtrarClientes()">
+      <div id="sugestoes-cliente" class="lista-sugestoes" style="display:none;"></div>
+      <div id="cliente-selecionado" style="font-weight:bold; color:#1b5e20;"></div>
+    </section>
+
+    <section>
+      <label>Adicionar produto</label>
+      <input type="text" id="busca-produto" placeholder="Digite o nome ou código..." oninput="filtrarProdutos()">
+      <div id="sugestoes-produto" class="lista-sugestoes" style="display:none;"></div>
+    </section>
+
+    <section>
+      <label>Itens do pedido</label>
+      <div id="lista-itens"><p style="color:#999;">Nenhum item ainda.</p></div>
+      <div class="total" id="total-pedido">Total: R$ 0,00</div>
+    </section>
+
+    <button class="btn-primary" onclick="salvarPedido()">Salvar pedido</button>
+
+    <section style="margin-top: 20px;">
+      <label>Pedidos desta sessão</label>
+      <div id="lista-pedidos-pendentes"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+const URL_BACKEND = 'COLE_AQUI_A_URL_DO_EXEC'; // ex: https://script.google.com/macros/s/AKfycb.../exec
+const SENHA_STORAGE_KEY = 'pedidosrapido_senha';
+const CATALOGO_STORAGE_KEY = 'pedidosrapido_catalogo';
+const FILA_STORAGE_KEY = 'pedidosrapido_fila';
+
+let catalogo = { clientes: [], produtos: [] };
+let clienteAtual = null;
+let itensAtuais = []; // {produtoId, nome, sku, preco, quantidade}
+
+// ---------- LOGIN ----------
+function entrar() {
+  const senha = document.getElementById('input-senha').value.trim();
+  if (!senha) return;
+  localStorage.setItem(SENHA_STORAGE_KEY, senha);
+  iniciarApp();
+}
+
+function iniciarApp() {
+  const senha = localStorage.getItem(SENHA_STORAGE_KEY);
+  if (!senha) return;
+  document.getElementById('tela-login').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  carregarCatalogoLocal();
+  tentarSincronizarCatalogo();
+  renderizarFila();
+  tentarEnviarPendentes();
+  atualizarStatusBar();
+}
+
+// ---------- STATUS DE CONEXÃO ----------
+function atualizarStatusBar() {
+  const bar = document.getElementById('status-bar');
+  if (navigator.onLine) {
+    bar.className = 'status-bar on';
+    bar.textContent = 'Online — pedidos pendentes serão enviados automaticamente.';
+    setTimeout(() => { bar.className = 'status-bar'; }, 3000);
+  } else {
+    bar.className = 'status-bar on offline';
+    bar.textContent = 'Sem internet — pedidos ficam salvos no celular e enviam quando o sinal voltar.';
+  }
+}
+window.addEventListener('online', () => { atualizarStatusBar(); tentarEnviarPendentes(); tentarSincronizarCatalogo(); });
+window.addEventListener('offline', atualizarStatusBar);
+
+// ---------- CATÁLOGO (offline-first) ----------
+function carregarCatalogoLocal() {
+  const salvo = localStorage.getItem(CATALOGO_STORAGE_KEY);
+  if (salvo) catalogo = JSON.parse(salvo);
+}
+
+function tentarSincronizarCatalogo() {
+  if (!navigator.onLine) return;
+  const callbackNome = 'cbCatalogo_' + Date.now();
+  window[callbackNome] = function (dados) {
+    if (dados && dados.clientes) {
+      catalogo = dados;
+      localStorage.setItem(CATALOGO_STORAGE_KEY, JSON.stringify(dados));
+    }
+    delete window[callbackNome];
+    script.remove();
+  };
+  const script = document.createElement('script');
+  script.src = URL_BACKEND + '?catalogo=1&callback_js=' + callbackNome;
+  script.onerror = () => { delete window[callbackNome]; };
+  document.body.appendChild(script);
+}
+
+// ---------- BUSCA CLIENTE ----------
+function filtrarClientes() {
+  const termo = document.getElementById('busca-cliente').value.toLowerCase();
+  const div = document.getElementById('sugestoes-cliente');
+  if (termo.length < 2) { div.style.display = 'none'; return; }
+  const resultados = catalogo.clientes.filter(c => c.nome.toLowerCase().includes(termo)).slice(0, 15);
+  div.innerHTML = resultados.map(c =>
+    `<div class="sugestao" onclick='selecionarCliente(${JSON.stringify(c).replace(/'/g, "&apos;")})'>${c.nome}</div>`
+  ).join('');
+  div.style.display = resultados.length ? 'block' : 'none';
+}
+
+function selecionarCliente(cliente) {
+  clienteAtual = cliente;
+  document.getElementById('cliente-selecionado').textContent = '✓ ' + cliente.nome;
+  document.getElementById('busca-cliente').value = '';
+  document.getElementById('sugestoes-cliente').style.display = 'none';
+}
+
+// ---------- BUSCA PRODUTO ----------
+function filtrarProdutos() {
+  const termo = document.getElementById('busca-produto').value.toLowerCase();
+  const div = document.getElementById('sugestoes-produto');
+  if (termo.length < 2) { div.style.display = 'none'; return; }
+  const resultados = catalogo.produtos.filter(p =>
+    p.nome.toLowerCase().includes(termo) || (p.sku && p.sku.toLowerCase().includes(termo))
+  ).slice(0, 15);
+  div.innerHTML = resultados.map(p =>
+    `<div class="sugestao" onclick='adicionarItem(${JSON.stringify(p).replace(/'/g, "&apos;")})'>${p.nome} — R$ ${Number(p.preco).toFixed(2)}</div>`
+  ).join('');
+  div.style.display = resultados.length ? 'block' : 'none';
+}
+
+function adicionarItem(produto) {
+  const existente = itensAtuais.find(i => i.produtoId === produto.id);
+  if (existente) {
+    existente.quantidade += 1;
+  } else {
+    itensAtuais.push({ produtoId: produto.id, nome: produto.nome, sku: produto.sku, preco: produto.preco, quantidade: 1 });
+  }
+  document.getElementById('busca-produto').value = '';
+  document.getElementById('sugestoes-produto').style.display = 'none';
+  renderizarItens();
+}
+
+function alterarQuantidade(produtoId, valor) {
+  const item = itensAtuais.find(i => i.produtoId === produtoId);
+  if (!item) return;
+  item.quantidade = Math.max(1, Number(valor) || 1);
+  renderizarItens();
+}
+
+function removerItem(produtoId) {
+  itensAtuais = itensAtuais.filter(i => i.produtoId !== produtoId);
+  renderizarItens();
+}
+
+function renderizarItens() {
+  const div = document.getElementById('lista-itens');
+  if (!itensAtuais.length) {
+    div.innerHTML = '<p style="color:#999;">Nenhum item ainda.</p>';
+  } else {
+    div.innerHTML = itensAtuais.map(i => `
+      <div class="item-linha">
+        <div>${i.nome}<br><small>R$ ${Number(i.preco).toFixed(2)} un.</small></div>
+        <div>
+          <input class="qtd-input" type="number" min="1" value="${i.quantidade}" onchange="alterarQuantidade('${i.produtoId}', this.value)">
+          <button onclick="removerItem('${i.produtoId}')">✕</button>
+        </div>
+      </div>
+    `).join('');
+  }
+  const total = itensAtuais.reduce((soma, i) => soma + i.preco * i.quantidade, 0);
+  document.getElementById('total-pedido').textContent = 'Total: R$ ' + total.toFixed(2);
+}
+
+// ---------- SALVAR / FILA / ENVIO ----------
+function salvarPedido() {
+  if (!clienteAtual) { alert('Selecione um cliente.'); return; }
+  if (!itensAtuais.length) { alert('Adicione ao menos 1 item.'); return; }
+
+  const pedido = {
+    id: 'local_' + Date.now(),
+    clienteId: clienteAtual.id,
+    clienteNome: clienteAtual.nome,
+    itens: itensAtuais.map(i => ({ produtoId: i.produtoId, quantidade: i.quantidade, preco: i.preco })),
+    resumoItens: itensAtuais.map(i => `${i.quantidade}x ${i.nome}`).join(', '),
+    total: itensAtuais.reduce((s, i) => s + i.preco * i.quantidade, 0),
+    status: 'pendente',
+    criadoEm: new Date().toISOString()
+  };
+
+  const fila = obterFila();
+  fila.push(pedido);
+  salvarFila(fila);
+
+  clienteAtual = null;
+  itensAtuais = [];
+  document.getElementById('cliente-selecionado').textContent = '';
+  renderizarItens();
+  renderizarFila();
+  tentarEnviarPendentes();
+}
+
+function obterFila() {
+  return JSON.parse(localStorage.getItem(FILA_STORAGE_KEY) || '[]');
+}
+function salvarFila(fila) {
+  localStorage.setItem(FILA_STORAGE_KEY, JSON.stringify(fila));
+}
+
+function renderizarFila() {
+  const fila = obterFila();
+  const div = document.getElementById('lista-pedidos-pendentes');
+  if (!fila.length) { div.innerHTML = '<p style="color:#999;">Nenhum pedido nesta sessão.</p>'; return; }
+  div.innerHTML = fila.slice().reverse().map(p => `
+    <div class="pedido-card">
+      <div><strong>${p.clienteNome}</strong> — <span class="badge badge-${p.status}">${p.status.toUpperCase()}</span></div>
+      <div style="font-size:13px; color:#555;">${p.resumoItens}</div>
+      <div style="font-size:13px;">Total: R$ ${p.total.toFixed(2)}</div>
+      ${p.erro ? `<div style="font-size:12px; color:#c62828;">${p.erro}</div>` : ''}
+      ${p.status !== 'enviado' ? `<button class="btn-secondary" style="margin-top:6px;" onclick="reenviarPedido('${p.id}')">Reenviar agora</button>` : ''}
+    </div>
+  `).join('');
+}
+
+function reenviarPedido(idLocal) {
+  const fila = obterFila();
+  const pedido = fila.find(p => p.id === idLocal);
+  if (!pedido) return;
+  enviarPedidoAoBling_(pedido, fila);
+}
+
+function tentarEnviarPendentes() {
+  if (!navigator.onLine) return;
+  const fila = obterFila();
+  fila.filter(p => p.status !== 'enviado').forEach(p => enviarPedidoAoBling_(p, fila));
+}
+
+function enviarPedidoAoBling_(pedido, fila) {
+  const senha = localStorage.getItem(SENHA_STORAGE_KEY);
+  const callbackNome = 'cbPedido_' + pedido.id.replace(/\W/g, '');
+  window[callbackNome] = function (resposta) {
+    const atual = obterFila();
+    const idx = atual.findIndex(p => p.id === pedido.id);
+    if (idx >= 0) {
+      if (resposta && resposta.sucesso) {
+        atual[idx].status = 'enviado';
+        atual[idx].idPedidoBling = resposta.idPedido;
+        delete atual[idx].erro;
+      } else {
+        atual[idx].status = 'erro';
+        atual[idx].erro = (resposta && resposta.erro) || 'Erro desconhecido.';
+      }
+      salvarFila(atual);
+      renderizarFila();
+    }
+    delete window[callbackNome];
+    script.remove();
+  };
+  const payload = encodeURIComponent(JSON.stringify({ clienteId: pedido.clienteId, itens: pedido.itens }));
+  const script = document.createElement('script');
+  script.src = URL_BACKEND + '?criar_pedido=1&senha=' + encodeURIComponent(senha) + '&payload=' + payload + '&callback_js=' + callbackNome;
+  script.onerror = () => {
+    delete window[callbackNome];
+    // mantém como pendente, tenta de novo depois
+  };
+  document.body.appendChild(script);
+}
+
+// ---------- INIT ----------
+document.addEventListener('click', function (ev) {
+  if (!ev.target.closest('#busca-cliente') && !ev.target.closest('#sugestoes-cliente')) {
+    document.getElementById('sugestoes-cliente').style.display = 'none';
+  }
+  if (!ev.target.closest('#busca-produto') && !ev.target.closest('#sugestoes-produto')) {
+    document.getElementById('sugestoes-produto').style.display = 'none';
+  }
+});
+
+if (localStorage.getItem(SENHA_STORAGE_KEY)) {
+  iniciarApp();
+}
+</script>
+</body>
+</html>
